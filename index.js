@@ -1037,11 +1037,11 @@ app.get('/api/sheets', authenticate, async (req, res) => {
         }
 
         // Allowed sort columns to prevent SQL injection
-        const allowedSorts = ['title', 'composer', 'created_at', 'updated_at', 'difficulty', 'genre', 'instrument'];
+        const allowedSorts = ['title', 'composer', 'created_at', 'updated_at', 'difficulty', 'genre_name', 'instrument'];
         const sortColumn = allowedSorts.includes(sort_by) ? sort_by : 'created_at';
         const sortOrder = order.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
-        query += ` ORDER BY s.${sortColumn} ${sortOrder}`;
+        query += ` ORDER BY ${sortColumn} ${sortOrder}`;
 
         const result = await db.query(query, params);
         res.json(result.rows);
