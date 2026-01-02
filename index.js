@@ -423,12 +423,12 @@ app.get('/', async (req, res) => {
                         <div class="text-3xl font-bold text-white">\${data.sheetsCount}</div>
                     </div>
                     <div class="bg-gray-800 p-6 rounded-xl border border-gray-700">
-                        <div class="text-gray-400 text-xs uppercase font-bold mb-1">Total Storage</div>
-                        <div class="text-3xl font-bold text-indigo-400">\${formatBytes(data.totalStorage)}</div>
+                        <div class="text-gray-400 text-xs uppercase font-bold mb-1">Total Folders</div>
+                        <div class="text-3xl font-bold text-white">\${data.foldersCount}</div>
                     </div>
                     <div class="bg-gray-800 p-6 rounded-xl border border-gray-700">
-                        <div class="text-gray-400 text-xs uppercase font-bold mb-1">Avg Sheets/User</div>
-                        <div class="text-3xl font-bold text-white">\${data.usersCount ? Math.round(data.sheetsCount / data.usersCount) : 0}</div>
+                        <div class="text-gray-400 text-xs uppercase font-bold mb-1">Total Storage</div>
+                        <div class="text-3xl font-bold text-indigo-400">\${formatBytes(data.totalStorage)}</div>
                     </div>
                 \`;
                 document.getElementById('stats-container').innerHTML = statsHtml;
@@ -548,11 +548,13 @@ app.get('/api/admin/stats', requireAdmin, async (req, res) => {
     try {
         const usersCount = await db.query('SELECT COUNT(*) FROM users');
         const sheetsCount = await db.query('SELECT COUNT(*) FROM sheets');
+        const foldersCount = await db.query('SELECT COUNT(*) FROM folders');
         const storageStats = await db.query('SELECT SUM(file_size) as total FROM sheets');
         
         res.json({
             usersCount: parseInt(usersCount.rows[0].count),
             sheetsCount: parseInt(sheetsCount.rows[0].count),
+            foldersCount: parseInt(foldersCount.rows[0].count),
             totalStorage: parseInt(storageStats.rows[0].total || 0)
         });
     } catch (e) {
