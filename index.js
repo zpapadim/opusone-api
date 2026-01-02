@@ -644,6 +644,61 @@ app.post('/api/ocr', upload.single('file'), async (req, res) => {
 });
 
 
+// Spotify Search
+app.get('/api/spotify/search', authenticate, async (req, res) => {
+    const query = req.query.q;
+    const { SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET } = process.env;
+
+    if (!SPOTIFY_CLIENT_ID || !SPOTIFY_CLIENT_SECRET) {
+        return res.status(503).json({ 
+            error: 'Spotify Search is not configured', 
+            hint: 'Add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET to your server .env file.' 
+        });
+    }
+
+    if (!query) return res.json({ results: [] });
+
+    try {
+        // 1. Get Access Token
+        const authRes = await fetch('https://accounts.spotify.com/api/token', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Authorization': 'Basic ' + Buffer.from(SPOTIFY_CLIENT_ID + ':' + SPOTIFY_CLIENT_SECRET).toString('base64')
+            },
+            body: 'grant_type=client_credentials'
+        });
+
+        if (!authRes.ok) throw new Error('Spotify Auth Failed');
+        const authData = await authRes.json();
+        const token = authData.access_token;
+
+        // 2. Search
+        const searchRes = await fetch(
+            `https://api.spotify.com/v1/search?q=${encodeURIComponent(query)}&type=track&limit=5`,
+            { headers: { 'Authorization': 'Bearer ' + token } }
+        );
+
+        if (!searchRes.ok) throw new Error('Spotify API Error');
+        const data = await searchRes.json();
+
+        const results = (data.tracks?.items || []).map(track => ({
+            id: track.id,
+            title: track.name,
+            description: track.artists.map(a => a.name).join(', '),
+            thumbnail: track.album.images[0]?.url,
+            url: track.external_urls.spotify,
+            channelTitle: track.artists[0].name,
+            source: 'spotify'
+        }));
+
+        res.json({ results });
+    } catch (e) {
+        console.error('Spotify Search Failed:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // YouTube Search
 app.get('/api/youtube/search', authenticate, async (req, res) => {
     const query = req.query.q;
