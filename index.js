@@ -973,7 +973,7 @@ app.get('/api/sheets', authenticate, async (req, res) => {
         let paramIndex = 2;
 
         if (q) {
-            query += ` AND (s.search_vector @@ plainto_tsquery('english', $${paramIndex}) OR s.title ILIKE $${paramIndex + 1} OR s.composer ILIKE $${paramIndex + 1} OR s.tags ILIKE $${paramIndex + 1})`;
+            query += ` AND (s.search_vector @@ plainto_tsquery('english', $${paramIndex}) OR s.title ILIKE $${paramIndex + 1} OR s.composer ILIKE $${paramIndex + 1} OR array_to_string(s.tags, ',') ILIKE $${paramIndex + 1})`;
             params.push(q, `%${q}%`);
             paramIndex += 2;
         }
@@ -1038,7 +1038,7 @@ app.get('/api/sheets', authenticate, async (req, res) => {
         }
 
         // Allowed sort columns to prevent SQL injection
-        const allowedSorts = ['title', 'composer', 'created_at', 'updated_at', 'difficulty', 'genre'];
+        const allowedSorts = ['title', 'composer', 'created_at', 'updated_at', 'difficulty', 'genre', 'instrument'];
         const sortColumn = allowedSorts.includes(sort_by) ? sort_by : 'created_at';
         const sortOrder = order.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
