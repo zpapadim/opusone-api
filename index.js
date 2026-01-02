@@ -193,7 +193,340 @@ function processSmartMetadata(tesseractData) {
 
 // --- ROUTES ---
 
-app.get('/', (req, res) => res.send('Sheet Music API Running'));
+// --- ADMIN & LOGGING SYSTEM ---
+
+// In-memory log buffer
+const LOG_BUFFER_SIZE = 1000;
+const logBuffer = [];
+
+// Intercept console.log and console.error
+const originalConsoleLog = console.log;
+const originalConsoleError = console.error;
+
+function formatLog(type, args) {
+    const timestamp = new Date().toISOString();
+    const message = args.map(arg => 
+        typeof arg === 'object' ? JSON.stringify(arg) : String(arg)
+    ).join(' ');
+    return { timestamp, type, message };
+}
+
+function pushLog(logEntry) {
+    logBuffer.unshift(logEntry);
+    if (logBuffer.length > LOG_BUFFER_SIZE) {
+        logBuffer.pop();
+    }
+}
+
+console.log = function(...args) {
+    pushLog(formatLog('INFO', args));
+    originalConsoleLog.apply(console, args);
+};
+
+console.error = function(...args) {
+    pushLog(formatLog('ERROR', args));
+    originalConsoleError.apply(console, args);
+};
+
+// Admin Middleware
+const ADMIN_KEY = process.env.ADMIN_KEY || 'admin123'; // Default key if not set
+
+const requireAdmin = (req, res, next) => {
+    const key = req.query.key || req.headers['x-admin-key'];
+    if (key && key === ADMIN_KEY) {
+        next();
+    } else {
+        res.status(401).json({ error: 'Unauthorized: Invalid Admin Key' });
+    }
+};
+
+// --- ROUTES ---
+
+// Admin Dashboard (HTML)
+app.get('/', async (req, res) => {
+    const key = req.query.key;
+    
+    // If no key provided, show simple status (or unauthorized page)
+    if (!key || key !== ADMIN_KEY) {
+        return res.send(`
+            <html>
+                <head><title>OpusOne Server</title></head>
+                <body style="font-family: system-ui; text-align: center; padding: 50px;">
+                    <h1>🎵 OpusOne API is Running</h1>
+                    <p>Access Admin Dashboard requires authentication.</p>
+                </body>
+            </html>
+        `);
+    }
+
+    res.send(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpusOne Admin Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .log-entry { font-family: monospace; font-size: 12px; }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen">
+    <div class="container mx-auto p-6 max-w-7xl">
+        <header class="flex justify-between items-center mb-8 border-b border-gray-700 pb-4">
+            <div class="flex items-center gap-3">
+                <div class="bg-indigo-600 p-2 rounded-lg">
+                    <i data-lucide="music" class="text-white"></i>
+                </div>
+                <h1 class="text-2xl font-bold">OpusOne <span class="text-indigo-400">Admin</span></h1>
+            </div>
+            <div class="flex gap-4 text-sm text-gray-400">
+                <span id="server-time"></span>
+                <span class="px-2 py-1 bg-green-900/30 text-green-400 rounded border border-green-800">System Healthy</span>
+            </div>
+        </header>
+
+        <!-- Stats Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8" id="stats-container">
+            <!-- Stats loaded via JS -->
+            <div class="animate-pulse bg-gray-800 h-24 rounded-xl"></div>
+            <div class="animate-pulse bg-gray-800 h-24 rounded-xl"></div>
+            <div class="animate-pulse bg-gray-800 h-24 rounded-xl"></div>
+            <div class="animate-pulse bg-gray-800 h-24 rounded-xl"></div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- User Management (2 cols) -->
+            <div class="lg:col-span-2 bg-gray-800 rounded-xl border border-gray-700 overflow-hidden flex flex-col h-[600px]">
+                <div class="p-4 border-b border-gray-700 flex justify-between items-center bg-gray-800/50">
+                    <h2 class="font-bold flex items-center gap-2"><i data-lucide="users" size="18"></i> User Management</h2>
+                    <button onclick="fetchUsers()" class="p-1 hover:bg-gray-700 rounded"><i data-lucide="refresh-cw" size="16"></i></button>
+                </div>
+                <div class="overflow-auto flex-1 p-0">
+                    <table class="w-full text-left border-collapse">
+                        <thead class="bg-gray-900/50 text-gray-400 text-xs uppercase sticky top-0">
+                            <tr>
+                                <th class="p-4 font-medium">User</th>
+                                <th class="p-4 font-medium">Sheets</th>
+                                <th class="p-4 font-medium">Storage</th>
+                                <th class="p-4 font-medium">Joined</th>
+                                <th class="p-4 font-medium text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="users-table-body" class="text-sm divide-y divide-gray-700/50">
+                            <!-- Users loaded here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Server Logs (1 col) -->
+            <div class="bg-black/50 rounded-xl border border-gray-700 overflow-hidden flex flex-col h-[600px]">
+                <div class="p-4 border-b border-gray-700 flex justify-between items-center bg-gray-800/50">
+                    <h2 class="font-bold flex items-center gap-2"><i data-lucide="terminal" size="18"></i> Live Logs</h2>
+                    <div class="flex gap-2">
+                        <span class="text-xs text-gray-500 flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span> Live</span>
+                    </div>
+                </div>
+                <div id="logs-container" class="flex-1 overflow-auto p-4 space-y-2 font-mono text-xs">
+                    <!-- Logs loaded here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        lucide.createIcons();
+        const ADMIN_KEY = "${key}";
+        const API_BASE = window.location.origin;
+
+        // Utilities
+        const formatBytes = (bytes) => {
+            if (!bytes) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        };
+
+        // Fetch Stats
+        async function fetchStats() {
+            try {
+                const res = await fetch(\`\${API_BASE}/api/admin/stats?key=\${ADMIN_KEY}\`);
+                const data = await res.json();
+                
+                const statsHtml = \`
+                    <div class="bg-gray-800 p-6 rounded-xl border border-gray-700">
+                        <div class="text-gray-400 text-xs uppercase font-bold mb-1">Total Users</div>
+                        <div class="text-3xl font-bold text-white">\${data.usersCount}</div>
+                    </div>
+                    <div class="bg-gray-800 p-6 rounded-xl border border-gray-700">
+                        <div class="text-gray-400 text-xs uppercase font-bold mb-1">Total Sheets</div>
+                        <div class="text-3xl font-bold text-white">\${data.sheetsCount}</div>
+                    </div>
+                    <div class="bg-gray-800 p-6 rounded-xl border border-gray-700">
+                        <div class="text-gray-400 text-xs uppercase font-bold mb-1">Total Storage</div>
+                        <div class="text-3xl font-bold text-indigo-400">\${formatBytes(data.totalStorage)}</div>
+                    </div>
+                    <div class="bg-gray-800 p-6 rounded-xl border border-gray-700">
+                        <div class="text-gray-400 text-xs uppercase font-bold mb-1">Avg Sheets/User</div>
+                        <div class="text-3xl font-bold text-white">\${data.usersCount ? Math.round(data.sheetsCount / data.usersCount) : 0}</div>
+                    </div>
+                \`;
+                document.getElementById('stats-container').innerHTML = statsHtml;
+            } catch (e) {
+                console.error('Failed to fetch stats', e);
+            }
+        }
+
+        // Fetch Users
+        async function fetchUsers() {
+            try {
+                const res = await fetch(\`\${API_BASE}/api/admin/users?key=\${ADMIN_KEY}\`);
+                const users = await res.json();
+                
+                const html = users.map(u => \`
+                    <tr class="hover:bg-gray-700/30 transition-colors">
+                        <td class="p-4">
+                            <div class="font-bold text-white">\${u.display_name || 'No Name'}</div>
+                            <div class="text-gray-500 text-xs">\${u.email}</div>
+                        </td>
+                        <td class="p-4">\${u.sheet_count}</td>
+                        <td class="p-4 text-gray-400">\${formatBytes(u.storage_used)}</td>
+                        <td class="p-4 text-gray-500">\${new Date(u.created_at).toLocaleDateString()}</td>
+                        <td class="p-4 text-right">
+                            <button onclick="deleteUser('\${u.id}', '\${u.email}')" class="text-red-400 hover:text-red-300 hover:bg-red-900/30 p-2 rounded transition-colors" title="Delete User">
+                                <i data-lucide="trash-2" width="16"></i>
+                            </button>
+                        </td>
+                    </tr>
+                \`).join('');
+                
+                document.getElementById('users-table-body').innerHTML = html;
+                lucide.createIcons();
+            } catch (e) {
+                console.error('Failed to fetch users', e);
+            }
+        }
+
+        // Delete User
+        async function deleteUser(id, email) {
+            if (!confirm(\`Are you sure you want to delete user \${email}? This will delete ALL their sheets and cannot be undone.\`)) return;
+            
+            try {
+                const res = await fetch(\`\${API_BASE}/api/admin/users/\${id}?key=\${ADMIN_KEY}\`, { method: 'DELETE' });
+                if (res.ok) {
+                    fetchUsers();
+                    fetchStats(); // Refresh stats
+                } else {
+                    alert('Failed to delete user');
+                }
+            } catch (e) {
+                alert('Error deleting user');
+            }
+        }
+
+        // Fetch Logs
+        async function fetchLogs() {
+            try {
+                const res = await fetch(\`\${API_BASE}/api/admin/logs?key=\${ADMIN_KEY}\`);
+                const logs = await res.json();
+                
+                const html = logs.map(l => \`
+                    <div class="log-entry p-2 rounded hover:bg-white/5 \${l.type === 'ERROR' ? 'text-red-400 border-l-2 border-red-500 bg-red-900/10' : 'text-gray-300 border-l-2 border-gray-600'}">
+                        <span class="opacity-50 mr-2">[\${new Date(l.timestamp).toLocaleTimeString()}]</span>
+                        <span class="\${l.type === 'INFO' ? 'text-blue-400' : 'text-red-400'} font-bold mr-2">\${l.type}</span>
+                        <span>\${l.message}</span>
+                    </div>
+                \`).join('');
+                
+                document.getElementById('logs-container').innerHTML = html;
+            } catch (e) { console.error(e); }
+        }
+
+        // Init
+        fetchStats();
+        fetchUsers();
+        fetchLogs();
+        
+        // Auto-refresh logs every 3s
+        setInterval(fetchLogs, 3000);
+        
+        // Clock
+        setInterval(() => {
+            document.getElementById('server-time').innerText = new Date().toUTCString();
+        }, 1000);
+    </script>
+</body>
+</html>
+    `);
+});
+
+// Admin API: Stats
+app.get('/api/admin/stats', requireAdmin, async (req, res) => {
+    try {
+        const usersCount = await db.query('SELECT COUNT(*) FROM users');
+        const sheetsCount = await db.query('SELECT COUNT(*) FROM sheets');
+        const storageStats = await db.query('SELECT SUM(file_size) as total FROM sheets');
+        
+        res.json({
+            usersCount: parseInt(usersCount.rows[0].count),
+            sheetsCount: parseInt(sheetsCount.rows[0].count),
+            totalStorage: parseInt(storageStats.rows[0].total || 0)
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Admin API: Users List
+app.get('/api/admin/users', requireAdmin, async (req, res) => {
+    try {
+        const result = await db.query(`
+            SELECT u.id, u.email, u.display_name, u.created_at,
+                   COUNT(s.id) as sheet_count,
+                   SUM(s.file_size) as storage_used
+            FROM users u
+            LEFT JOIN sheets s ON u.id = s.user_id
+            GROUP BY u.id
+            ORDER BY u.created_at DESC
+        `);
+        res.json(result.rows);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Admin API: Delete User
+app.delete('/api/admin/users/:id', requireAdmin, async (req, res) => {
+    const { id } = req.params;
+    try {
+        // First delete storage files
+        const files = await db.query('SELECT storage_key FROM sheets WHERE user_id = $1', [id]);
+        for (const file of files.rows) {
+            if (file.storage_key) await deleteFile(file.storage_key);
+        }
+        
+        // Delete user (cascade will handle sheets/folders/shares if schema configured, otherwise manual)
+        // Assuming cascade for simplicity, or manual clean up
+        await db.query('DELETE FROM sheets WHERE user_id = $1', [id]);
+        await db.query('DELETE FROM folders WHERE user_id = $1', [id]);
+        await db.query('DELETE FROM users WHERE id = $1', [id]);
+        
+        console.log(`Admin deleted user ${id}`);
+        res.json({ success: true });
+    } catch (e) {
+        console.error('Admin delete user failed:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Admin API: Logs
+app.get('/api/admin/logs', requireAdmin, (req, res) => {
+    res.json(logBuffer);
+});
 
 // OCR Route
 app.post('/api/ocr', upload.single('file'), async (req, res) => {
