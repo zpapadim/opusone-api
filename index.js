@@ -1913,4 +1913,11 @@ app.get('/api/genres', async (req, res) => {
 
 app.listen(port, () => {
     console.log(`Server running on http://localhost:${port}`);
+    
+    // Log Email Service Status
+    if (process.env.RESEND_API_KEY) {
+        console.log('📧 Email Service: ACTIVE (Resend)');
+    } else {
+        console.log('⚠️ Email Service: DISABLED (Missing RESEND_API_KEY)');
+    }
 });

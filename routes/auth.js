@@ -143,7 +143,7 @@ router.post('/forgot-password', async (req, res) => {
             { expiresIn: '1h' }
         );
 
-        const resetUrl = `${FRONTEND_URL}/reset-password?token=${resetToken}`;
+        const resetUrl = `${FRONTEND_URL.replace(/\/$/, '')}/reset-password?token=${resetToken}`;
 
         // Send email via Resend
         if (resend) {
@@ -153,21 +153,34 @@ router.post('/forgot-password', async (req, res) => {
                     to: email.toLowerCase(),
                     subject: 'Reset Your OpusOne Password',
                     html: `
-                        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                            <h2 style="color: #4F46E5;">Password Reset Request</h2>
-                            <p>You requested to reset your password for your OpusOne account.</p>
-                            <p>Click the button below to reset your password. This link will expire in 1 hour.</p>
-                            <a href="${resetUrl}"
-                               style="display: inline-block; background-color: #4F46E5; color: white; padding: 12px 24px;
-                                      text-decoration: none; border-radius: 6px; margin: 16px 0;">
-                                Reset Password
-                            </a>
-                            <p style="color: #666; font-size: 14px;">
-                                If you didn't request this, you can safely ignore this email.
-                            </p>
-                            <p style="color: #666; font-size: 12px; margin-top: 32px;">
-                                Or copy this link: ${resetUrl}
-                            </p>
+                        <div style="font-family: 'Helvetica Neue', Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9fafb; border-radius: 10px;">
+                            <div style="text-align: center; margin-bottom: 24px;">
+                                <h1 style="color: #1e293b; font-size: 24px; margin: 0;">OpusOne</h1>
+                                <p style="color: #64748b; font-size: 14px; margin: 4px 0 0;">Sheet Music Library</p>
+                            </div>
+                            
+                            <div style="background-color: #ffffff; padding: 32px; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
+                                <h2 style="color: #1e293b; font-size: 20px; margin-top: 0;">Reset Your Password</h2>
+                                <p style="color: #475569; line-height: 1.6;">
+                                    We received a request to reset the password for your OpusOne account. If you didn't make this request, you can safely ignore this email.
+                                </p>
+                                
+                                <div style="text-align: center; margin: 32px 0;">
+                                    <a href="${resetUrl}"
+                                       style="display: inline-block; background-color: #4f46e5; color: white; padding: 14px 28px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; box-shadow: 0 4px 6px -1px rgba(79, 70, 229, 0.2);">
+                                        Reset Password
+                                    </a>
+                                </div>
+                                
+                                <p style="color: #64748b; font-size: 14px; line-height: 1.5; margin-bottom: 0;">
+                                    This link will expire in 1 hour.
+                                </p>
+                            </div>
+                            
+                            <div style="text-align: center; margin-top: 24px; color: #94a3b8; font-size: 12px;">
+                                <p>Or copy and paste this URL into your browser:</p>
+                                <a href="${resetUrl}" style="color: #4f46e5; text-decoration: none; word-break: break-all;">${resetUrl}</a>
+                            </div>
                         </div>
                     `
                 });
