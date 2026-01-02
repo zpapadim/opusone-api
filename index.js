@@ -985,18 +985,17 @@ app.get('/api/sheets', authenticate, async (req, res) => {
         }
 
         if (instrument) {
-            // Check against the joined instrument name or the cached instrument field if it exists
-            query += ` AND (s.instrument ILIKE $${paramIndex} OR EXISTS (
+            query += ` AND EXISTS (
                 SELECT 1 FROM sheet_instruments si 
                 JOIN instruments i ON si.instrument_id = i.id 
                 WHERE si.sheet_id = s.id AND i.name ILIKE $${paramIndex}
-            ))`;
+            )`;
             params.push(`%${instrument}%`);
             paramIndex++;
         }
 
         if (genre) {
-            query += ` AND (s.genre ILIKE $${paramIndex} OR g.name ILIKE $${paramIndex})`;
+            query += ` AND g.name ILIKE $${paramIndex}`;
             params.push(`%${genre}%`);
             paramIndex++;
         }
