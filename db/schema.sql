@@ -171,6 +171,16 @@ CREATE TABLE batch_upload_items (
     processed_at TIMESTAMPTZ
 );
 
+-- Sheet shares (share sheets with other users by email)
+CREATE TABLE sheet_shares (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sheet_id UUID NOT NULL REFERENCES sheets(id) ON DELETE CASCADE,
+    shared_with_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    shared_by_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW() NOT NULL,
+    CONSTRAINT unique_sheet_share UNIQUE (sheet_id, shared_with_user_id)
+);
+
 -- ============================================
 -- INDEXES
 -- ============================================
@@ -205,6 +215,11 @@ CREATE INDEX idx_batch_uploads_user ON batch_uploads(user_id);
 CREATE INDEX idx_batch_uploads_status ON batch_uploads(status);
 CREATE INDEX idx_batch_items_batch ON batch_upload_items(batch_id);
 CREATE INDEX idx_batch_items_status ON batch_upload_items(status);
+
+-- Sheet shares
+CREATE INDEX idx_sheet_shares_sheet ON sheet_shares(sheet_id);
+CREATE INDEX idx_sheet_shares_shared_with ON sheet_shares(shared_with_user_id);
+CREATE INDEX idx_sheet_shares_shared_by ON sheet_shares(shared_by_user_id);
 
 -- ============================================
 -- FUNCTIONS & TRIGGERS

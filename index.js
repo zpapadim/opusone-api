@@ -17,6 +17,10 @@ const { uploadFile, deleteFile } = require('./lib/storage');
 // Import pdf-parse directly from lib to avoid test code in index.js
 const pdfParse = require('pdf-parse/lib/pdf-parse');
 
+// Auth routes and middleware
+const authRoutes = require('./routes/auth');
+const { authenticate, optionalAuth } = require('./middleware/auth');
+
 const app = express();
 const port = process.env.PORT || 5000;
 
@@ -34,8 +38,13 @@ app.use(cors({
         if (allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
-            console.log('Blocked CORS request from:', origin);
-            callback(null, true); // Allow all for now, restrict later if needed
+            // In development, allow all origins; in production, block unauthorized origins
+            if (process.env.NODE_ENV === 'production') {
+                console.log('Blocked CORS request from:', origin);
+                callback(new Error('CORS not allowed'));
+            } else {
+                callback(null, true);
+            }
         }
     },
     credentials: true
@@ -64,6 +73,9 @@ app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Auth routes
+app.use('/api/auth', authRoutes);
+
 // Helper to calculate file hash
 function calculateFileHash(filePath) {
     return new Promise((resolve, reject) => {
@@ -76,8 +88,13 @@ function calculateFileHash(filePath) {
 }
 
 // --- OCR HELPER ---
+// OCR language: defaults to English, can be configured via OCR_LANGUAGE env var
+// Common values: 'eng' (English), 'ell' (Greek), 'deu' (German), 'fra' (French), 'ita' (Italian)
+// Multiple languages can be specified: 'eng+ell' for English and Greek
+const OCR_LANGUAGE = process.env.OCR_LANGUAGE || 'eng';
+
 async function extractMetadataFromImage(imagePath) {
-    const worker = await Tesseract.createWorker('ell', 1, {
+    const worker = await Tesseract.createWorker(OCR_LANGUAGE, 1, {
         logger: m => console.log('Tesseract:', m.status, m.progress ? Math.round(m.progress * 100) + '%' : '')
     });
     const ret = await worker.recognize(imagePath);
@@ -210,65 +227,137 @@ app.get('/api/search', async (req, res) => {
 
     console.log('MusicBrainz Search:', query);
 
-    try {
-        const response = await fetch(
-            `https://musicbrainz.org/ws/2/recording?query=${encodeURIComponent(query)}&fmt=json&limit=10`,
-            {
-                headers: {
-                    'User-Agent': 'SheetMusicApp/1.0 (zpapadim@gmail.com)'
+    const performSearch = async (attempt = 1) => {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s timeout
+
+            const response = await fetch(
+                `https://musicbrainz.org/ws/2/recording?query=${encodeURIComponent(query)}&fmt=json&limit=10`,
+                {
+                    headers: {
+                        'User-Agent': 'SheetMusicApp/1.0 (zpapadim@gmail.com)',
+                        'Accept': 'application/json'
+                    },
+                    signal: controller.signal
                 }
+            );
+            clearTimeout(timeoutId);
+
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`MusicBrainz API Error: ${response.status} ${response.statusText} - ${text.substring(0, 100)}`);
             }
-        );
-        const data = await response.json();
 
-        const results = (data.recordings || []).slice(0, 5).map(rec => {
-            const artists = rec['artist-credit'] || [];
-            const composer = artists.map(a => a.artist?.name || a.name).join(', ');
-            const releases = rec.releases || [];
-            const firstRelease = releases[0] || {};
-            const year = firstRelease.date ? firstRelease.date.substring(0, 4) : '';
-            const tags = (rec.tags || []).map(t => t.name).slice(0, 3).join(', ');
+            const data = await response.json();
 
-            return {
-                title: rec.title,
-                composer: composer,
-                artist: composer,
-                year: year,
-                album: firstRelease.title || '',
-                tags: tags,
-                mbid: rec.id,
-                link: `https://musicbrainz.org/recording/${rec.id}`,
-                source: 'MusicBrainz',
-                metadata: {
+            const results = (data.recordings || []).slice(0, 5).map(rec => {
+                const artists = rec['artist-credit'] || [];
+                const composer = artists.map(a => a.artist?.name || a.name).join(', ');
+                const releases = rec.releases || [];
+                const firstRelease = releases[0] || {};
+                const year = firstRelease.date ? firstRelease.date.substring(0, 4) : '';
+                const tags = (rec.tags || []).map(t => t.name).slice(0, 3).join(', ');
+
+                return {
                     title: rec.title,
                     composer: composer,
-                    copyrightYear: year,
-                    tags: tags
-                }
-            };
-        });
+                    artist: composer,
+                    year: year,
+                    album: firstRelease.title || '',
+                    tags: tags,
+                    mbid: rec.id,
+                    link: `https://musicbrainz.org/recording/${rec.id}`,
+                    source: 'MusicBrainz',
+                    metadata: {
+                        title: rec.title,
+                        composer: composer,
+                        copyrightYear: year,
+                        tags: tags
+                    }
+                };
+            });
 
-        console.log('MusicBrainz found', results.length, 'results');
+            console.log('MusicBrainz found', results.length, 'results');
+            return results;
+
+        } catch (e) {
+            if (attempt < 2) {
+                console.log(`MusicBrainz search attempt ${attempt} failed, retrying...`);
+                await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1s
+                return performSearch(attempt + 1);
+            }
+            throw e;
+        }
+    };
+
+    try {
+        const results = await performSearch();
         res.json({ results, query });
     } catch (e) {
-        console.error("MusicBrainz Search Failed:", e.message);
+        console.error("MusicBrainz Search Failed:", e.message, e.cause);
         res.json({
             results: [],
             error: e.message,
-            hint: e.message.includes('TLS') || e.message.includes('socket')
-                ? 'Network/proxy issue - MusicBrainz may be blocked on this network'
+            hint: e.message.includes('fetch failed') 
+                ? 'Network connectivity issue to MusicBrainz. Please try again.' 
                 : null
         });
     }
 });
 
+// Autosuggestion endpoint
+app.get('/api/suggestions', authenticate, async (req, res) => {
+    const { field, q } = req.query;
+    
+    // Allowed fields for security
+    const ALLOWED_FIELDS = ['composer', 'arranger', 'lyricist', 'publisher', 'opus', 'subtitle'];
+    
+    if (!field || !ALLOWED_FIELDS.includes(field)) {
+        return res.status(400).json({ error: 'Invalid or missing field parameter' });
+    }
+    
+    if (!q || q.length < 2) {
+        return res.json([]);
+    }
+
+    try {
+        // Query for distinct values, ordered by frequency (popularity)
+        // ILIKE for case-insensitive matching
+        const query = `
+            SELECT ${field} as value, COUNT(*) as freq 
+            FROM sheets 
+            WHERE ${field} ILIKE $1 
+            AND ${field} IS NOT NULL 
+            AND length(${field}) > 0
+            GROUP BY ${field} 
+            ORDER BY freq DESC, ${field} ASC 
+            LIMIT 10
+        `;
+        
+        const result = await db.query(query, [`%${q}%`]);
+        res.json(result.rows.map(row => row.value));
+    } catch (e) {
+        console.error('Autosuggest failed:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // --- FOLDERS ---
 
-app.get('/api/folders', async (req, res) => {
+app.get('/api/folders', authenticate, async (req, res) => {
     try {
-        const result = await db.query(
-            'SELECT * FROM folders ORDER BY display_order, name'
-        );
+        const result = await db.query(`
+            SELECT f.*,
+                   CASE WHEN f.user_id = $1 THEN true ELSE false END as is_owner,
+                   CASE WHEN f.user_id != $1 THEN u.display_name ELSE null END as shared_by,
+                   fs.permission as share_permission
+            FROM folders f
+            LEFT JOIN folder_shares fs ON f.id = fs.folder_id AND fs.shared_with_user_id = $1
+            LEFT JOIN users u ON f.user_id = u.id
+            WHERE f.user_id = $1 OR fs.shared_with_user_id = $1
+            ORDER BY f.display_order, f.name
+        `, [req.user.id]);
         res.json(result.rows);
     } catch (e) {
         console.error('Get folders failed:', e);
@@ -276,7 +365,7 @@ app.get('/api/folders', async (req, res) => {
     }
 });
 
-app.post('/api/folders', async (req, res) => {
+app.post('/api/folders', authenticate, async (req, res) => {
     const { name, parentId, color } = req.body;
 
     try {
@@ -284,7 +373,7 @@ app.post('/api/folders', async (req, res) => {
             `INSERT INTO folders (name, parent_id, color, user_id)
              VALUES ($1, $2, $3, $4)
              RETURNING *`,
-            [name, parentId || null, color || null, null] // user_id null for now (no auth yet)
+            [name, parentId || null, color || null, req.user.id]
         );
         res.status(201).json(result.rows[0]);
     } catch (e) {
@@ -293,11 +382,11 @@ app.post('/api/folders', async (req, res) => {
     }
 });
 
-app.delete('/api/folders/:id', async (req, res) => {
+app.delete('/api/folders/:id', authenticate, async (req, res) => {
     const { id } = req.params;
 
     try {
-        await db.query('DELETE FROM folders WHERE id = $1', [id]);
+        await db.query('DELETE FROM folders WHERE id = $1 AND user_id = $2', [id, req.user.id]);
         res.status(204).send();
     } catch (e) {
         console.error('Delete folder failed:', e);
@@ -305,11 +394,123 @@ app.delete('/api/folders/:id', async (req, res) => {
     }
 });
 
+// --- FOLDER SHARING ---
+
+// Share a folder with another user by email
+app.post('/api/folders/:id/share', authenticate, async (req, res) => {
+    const { id } = req.params;
+    const { email, permission = 'view' } = req.body;
+
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+    if (!VALID_PERMISSIONS.includes(permission)) {
+        return res.status(400).json({ error: 'Invalid permission level' });
+    }
+
+    try {
+        const folderCheck = await db.query('SELECT id FROM folders WHERE id = $1 AND user_id = $2', [id, req.user.id]);
+        if (folderCheck.rows.length === 0) return res.status(404).json({ error: 'Folder not found or you do not own it' });
+
+        const userResult = await db.query('SELECT id, email FROM users WHERE LOWER(email) = LOWER($1)', [email]);
+        if (userResult.rows.length === 0) return res.status(404).json({ error: 'Email not registered to a user' });
+        const targetUser = userResult.rows[0];
+
+        if (targetUser.id === req.user.id) return res.status(400).json({ error: 'Cannot share with yourself' });
+
+        const existing = await db.query('SELECT id FROM folder_shares WHERE folder_id = $1 AND shared_with_user_id = $2', [id, targetUser.id]);
+        if (existing.rows.length > 0) return res.status(409).json({ error: 'Folder already shared with this user' });
+
+        const result = await db.query(`
+            INSERT INTO folder_shares (folder_id, shared_with_user_id, shared_by_user_id, permission)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, permission, created_at
+        `, [id, targetUser.id, req.user.id, permission]);
+
+        res.status(201).json({
+            message: 'Folder shared successfully',
+            share: {
+                id: result.rows[0].id,
+                folder_id: id,
+                permission: result.rows[0].permission,
+                shared_with: { id: targetUser.id, email: targetUser.email },
+                created_at: result.rows[0].created_at
+            }
+        });
+    } catch (e) {
+        console.error('Share folder failed:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Get folder shares
+app.get('/api/folders/:id/shares', authenticate, async (req, res) => {
+    const { id } = req.params;
+    try {
+        const folderCheck = await db.query('SELECT id FROM folders WHERE id = $1 AND user_id = $2', [id, req.user.id]);
+        if (folderCheck.rows.length === 0) return res.status(404).json({ error: 'Folder not found or access denied' });
+
+        const result = await db.query(`
+            SELECT fs.id, fs.permission, fs.created_at,
+                   u.id as user_id, u.email, u.display_name
+            FROM folder_shares fs
+            JOIN users u ON fs.shared_with_user_id = u.id
+            WHERE fs.folder_id = $1
+            ORDER BY fs.created_at DESC
+        `, [id]);
+
+        res.json(result.rows.map(row => ({
+            id: row.id,
+            permission: row.permission,
+            user: { id: row.user_id, email: row.email, display_name: row.display_name },
+            created_at: row.created_at
+        })));
+    } catch (e) {
+        console.error('Get folder shares failed:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Remove folder share
+app.delete('/api/folders/:id/share', authenticate, async (req, res) => {
+    const { id } = req.params;
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+
+    try {
+        const folderCheck = await db.query('SELECT id FROM folders WHERE id = $1 AND user_id = $2', [id, req.user.id]);
+        if (folderCheck.rows.length === 0) return res.status(404).json({ error: 'Folder not found or access denied' });
+
+        const userResult = await db.query('SELECT id FROM users WHERE LOWER(email) = LOWER($1)', [email]);
+        if (userResult.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+        const targetUserId = userResult.rows[0].id;
+
+        await db.query('DELETE FROM folder_shares WHERE folder_id = $1 AND shared_with_user_id = $2', [id, targetUserId]);
+        res.status(200).json({ message: 'Share removed' });
+    } catch (e) {
+        console.error('Remove folder share failed:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // --- SHEETS ---
 
-app.get('/api/sheets', async (req, res) => {
+app.get('/api/sheets', authenticate, async (req, res) => {
     try {
-        const result = await db.query(`
+        const { 
+            q, 
+            composer, 
+            instrument, 
+            genre, 
+            difficulty,
+            key_signature,
+            time_signature,
+            tempo,
+            publisher,
+            sort_by = 'created_at', 
+            order = 'desc',
+            folder_id
+        } = req.query;
+
+        let query = `
             SELECT s.*, g.name as genre_name,
                    COALESCE(
                        (SELECT array_agg(sf.folder_id)
@@ -320,11 +521,106 @@ app.get('/api/sheets', async (req, res) => {
                    (SELECT i.name FROM sheet_instruments si
                     JOIN instruments i ON si.instrument_id = i.id
                     WHERE si.sheet_id = s.id AND si.is_primary = true
-                    LIMIT 1) as instrument
+                    LIMIT 1) as instrument,
+                   CASE WHEN s.user_id = $1 THEN true ELSE false END as is_owner,
+                   CASE WHEN s.user_id != $1 THEN u.display_name ELSE null END as shared_by,
+                   COALESCE(
+                       ss.permission, 
+                       (SELECT fs.permission 
+                        FROM folder_shares fs
+                        JOIN sheet_folders sf ON fs.folder_id = sf.folder_id
+                        WHERE sf.sheet_id = s.id AND fs.shared_with_user_id = $1
+                        LIMIT 1)
+                   ) as share_permission
             FROM sheets s
             LEFT JOIN genres g ON s.genre_id = g.id
-            ORDER BY s.created_at DESC
-        `);
+            LEFT JOIN sheet_shares ss ON s.id = ss.sheet_id AND ss.shared_with_user_id = $1
+            LEFT JOIN users u ON s.user_id = u.id
+            WHERE (s.user_id = $1 
+               OR ss.shared_with_user_id = $1
+               OR EXISTS (
+                   SELECT 1 FROM sheet_folders sf
+                   JOIN folder_shares fs ON sf.folder_id = fs.folder_id
+                   WHERE sf.sheet_id = s.id AND fs.shared_with_user_id = $1
+               ))
+        `;
+
+        const params = [req.user.id];
+        let paramIndex = 2;
+
+        if (q) {
+            query += ` AND (s.search_vector @@ plainto_tsquery('english', $${paramIndex}) OR s.title ILIKE $${paramIndex + 1} OR s.composer ILIKE $${paramIndex + 1} OR s.tags ILIKE $${paramIndex + 1})`;
+            params.push(q, `%${q}%`);
+            paramIndex += 2;
+        }
+
+        if (composer) {
+            query += ` AND s.composer ILIKE $${paramIndex}`;
+            params.push(`%${composer}%`);
+            paramIndex++;
+        }
+
+        if (instrument) {
+            // Check against the joined instrument name or the cached instrument field if it exists
+            query += ` AND (s.instrument ILIKE $${paramIndex} OR EXISTS (
+                SELECT 1 FROM sheet_instruments si 
+                JOIN instruments i ON si.instrument_id = i.id 
+                WHERE si.sheet_id = s.id AND i.name ILIKE $${paramIndex}
+            ))`;
+            params.push(`%${instrument}%`);
+            paramIndex++;
+        }
+
+        if (genre) {
+            query += ` AND (s.genre ILIKE $${paramIndex} OR g.name ILIKE $${paramIndex})`;
+            params.push(`%${genre}%`);
+            paramIndex++;
+        }
+
+        if (difficulty) {
+            query += ` AND s.difficulty = $${paramIndex}`;
+            params.push(difficulty);
+            paramIndex++;
+        }
+
+        if (key_signature) {
+            query += ` AND s.key_signature = $${paramIndex}`;
+            params.push(key_signature);
+            paramIndex++;
+        }
+
+        if (time_signature) {
+            query += ` AND s.time_signature = $${paramIndex}`;
+            params.push(time_signature);
+            paramIndex++;
+        }
+        
+        if (tempo) {
+            query += ` AND s.tempo ILIKE $${paramIndex}`;
+            params.push(`%${tempo}%`);
+            paramIndex++;
+        }
+
+        if (publisher) {
+            query += ` AND s.publisher ILIKE $${paramIndex}`;
+            params.push(`%${publisher}%`);
+            paramIndex++;
+        }
+        
+        if (folder_id) {
+             query += ` AND EXISTS (SELECT 1 FROM sheet_folders sf WHERE sf.sheet_id = s.id AND sf.folder_id = $${paramIndex})`;
+             params.push(folder_id);
+             paramIndex++;
+        }
+
+        // Allowed sort columns to prevent SQL injection
+        const allowedSorts = ['title', 'composer', 'created_at', 'updated_at', 'difficulty', 'genre'];
+        const sortColumn = allowedSorts.includes(sort_by) ? sort_by : 'created_at';
+        const sortOrder = order.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+
+        query += ` ORDER BY s.${sortColumn} ${sortOrder}`;
+
+        const result = await db.query(query, params);
         res.json(result.rows);
     } catch (e) {
         console.error('Get sheets failed:', e);
@@ -332,14 +628,17 @@ app.get('/api/sheets', async (req, res) => {
     }
 });
 
-app.get('/api/sheets/:id', async (req, res) => {
+app.get('/api/sheets/:id', authenticate, async (req, res) => {
     const { id } = req.params;
 
     try {
-        const result = await db.query(
-            'SELECT * FROM sheets WHERE id = $1',
-            [id]
-        );
+        const result = await db.query(`
+            SELECT s.*,
+                   CASE WHEN s.user_id = $2 THEN true ELSE false END as is_owner
+            FROM sheets s
+            LEFT JOIN sheet_shares ss ON s.id = ss.sheet_id AND ss.shared_with_user_id = $2
+            WHERE s.id = $1 AND (s.user_id = $2 OR ss.shared_with_user_id = $2)
+        `, [id, req.user.id]);
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Sheet not found' });
         }
@@ -350,7 +649,7 @@ app.get('/api/sheets/:id', async (req, res) => {
     }
 });
 
-app.post('/api/sheets', upload.single('file'), async (req, res) => {
+app.post('/api/sheets', authenticate, upload.single('file'), async (req, res) => {
     const {
         title, subtitle, composer, arranger, lyricist,
         instrument, keySignature, timeSignature, tempo,
@@ -373,13 +672,13 @@ app.post('/api/sheets', upload.single('file'), async (req, res) => {
             // Calculate Hash
             fileHash = await calculateFileHash(req.file.path);
             
-            // Check for duplicate content
-            const dupCheck = await db.query('SELECT id, title, composer FROM sheets WHERE file_hash = $1', [fileHash]);
+            // Check for duplicate content (per-user)
+            const dupCheck = await db.query('SELECT id, title, composer FROM sheets WHERE file_hash = $1 AND user_id = $2', [fileHash, req.user.id]);
             if (dupCheck.rows.length > 0) {
                 if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-                return res.status(409).json({ 
-                    error: 'Duplicate file content detected', 
-                    duplicate: dupCheck.rows[0] 
+                return res.status(409).json({
+                    error: 'Duplicate file content detected',
+                    duplicate: dupCheck.rows[0]
                 });
             }
 
@@ -479,7 +778,7 @@ app.post('/api/sheets', upload.single('file'), async (req, res) => {
             storageKey,
             fileUrl ? 'supabase' : null,
             fileUrl ? 'uploaded' : 'registered',
-            null, // user_id null for now
+            req.user.id,
             fileHash
         ]);
 
@@ -539,7 +838,7 @@ app.post('/api/sheets', upload.single('file'), async (req, res) => {
     }
 });
 
-app.put('/api/sheets/:id', upload.single('file'), async (req, res) => {
+app.put('/api/sheets/:id', authenticate, upload.single('file'), async (req, res) => {
     const { id } = req.params;
     const {
         title, subtitle, composer, arranger, lyricist,
@@ -549,8 +848,8 @@ app.put('/api/sheets/:id', upload.single('file'), async (req, res) => {
     } = req.body;
 
     try {
-        // Get existing sheet
-        const existing = await db.query('SELECT * FROM sheets WHERE id = $1', [id]);
+        // Get existing sheet - ensure it belongs to the user
+        const existing = await db.query('SELECT * FROM sheets WHERE id = $1 AND user_id = $2', [id, req.user.id]);
         if (existing.rows.length === 0) {
             return res.status(404).json({ error: 'Sheet not found' });
         }
@@ -751,16 +1050,37 @@ app.put('/api/sheets/:id', upload.single('file'), async (req, res) => {
     }
 });
 
-app.delete('/api/sheets/:id', async (req, res) => {
+app.delete('/api/sheets/:id', authenticate, async (req, res) => {
     const { id } = req.params;
 
     try {
-        // Get sheet to delete file from Cloudinary
-        const existing = await db.query('SELECT storage_key FROM sheets WHERE id = $1', [id]);
-        if (existing.rows.length > 0 && existing.rows[0].storage_key) {
-            await deleteFile(existing.rows[0].storage_key);
+        // Check if user owns the sheet OR has 'full' permission
+        const accessCheck = await db.query(`
+            SELECT s.storage_key, s.user_id,
+                   CASE WHEN s.user_id = $2 THEN true ELSE false END as is_owner,
+                   ss.permission
+            FROM sheets s
+            LEFT JOIN sheet_shares ss ON s.id = ss.sheet_id AND ss.shared_with_user_id = $2
+            WHERE s.id = $1 AND (s.user_id = $2 OR ss.shared_with_user_id = $2)
+        `, [id, req.user.id]);
+
+        if (accessCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Sheet not found' });
         }
 
+        const { is_owner, permission, storage_key } = accessCheck.rows[0];
+
+        // Only owner or users with 'full' permission can delete
+        if (!is_owner && permission !== 'full') {
+            return res.status(403).json({ error: 'You do not have permission to delete this sheet' });
+        }
+
+        // Delete the file from storage
+        if (storage_key) {
+            await deleteFile(storage_key);
+        }
+
+        // Delete the sheet (will cascade delete shares)
         await db.query('DELETE FROM sheets WHERE id = $1', [id]);
         res.status(204).send();
     } catch (e) {
@@ -769,13 +1089,85 @@ app.delete('/api/sheets/:id', async (req, res) => {
     }
 });
 
+// Mass delete sheets
+app.post('/api/sheets/batch-delete', authenticate, async (req, res) => {
+    const { ids } = req.body;
+
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ error: 'No sheet IDs provided' });
+    }
+
+    try {
+        // Check permissions for all sheets
+        const accessCheck = await db.query(`
+            SELECT s.id, s.storage_key, s.user_id,
+                   CASE WHEN s.user_id = $2 THEN true ELSE false END as is_owner,
+                   ss.permission
+            FROM sheets s
+            LEFT JOIN sheet_shares ss ON s.id = ss.sheet_id AND ss.shared_with_user_id = $2
+            WHERE s.id = ANY($1::uuid[]) AND (s.user_id = $2 OR ss.shared_with_user_id = $2)
+        `, [ids, req.user.id]);
+
+        const accessibleSheets = accessCheck.rows;
+        const deletableSheets = accessibleSheets.filter(
+            sheet => sheet.is_owner || sheet.permission === 'full'
+        );
+
+        if (deletableSheets.length === 0) {
+            return res.status(403).json({ error: 'You do not have permission to delete any of the selected sheets' });
+        }
+
+        const deletedIds = [];
+        const errors = [];
+
+        // Delete files from storage and database
+        for (const sheet of deletableSheets) {
+            try {
+                // Delete from storage if exists
+                if (sheet.storage_key) {
+                    await deleteFile(sheet.storage_key);
+                }
+
+                // Delete from database
+                await db.query('DELETE FROM sheets WHERE id = $1', [sheet.id]);
+                deletedIds.push(sheet.id);
+            } catch (err) {
+                console.error(`Failed to delete sheet ${sheet.id}:`, err);
+                errors.push({ id: sheet.id, error: err.message });
+            }
+        }
+
+        // Report sheets that weren't accessible
+        const notFoundIds = ids.filter(id => !accessibleSheets.find(s => s.id === id));
+        const noPermissionIds = accessibleSheets
+            .filter(s => !s.is_owner && s.permission !== 'full')
+            .map(s => s.id);
+
+        res.json({
+            deleted: deletedIds,
+            notFound: notFoundIds,
+            noPermission: noPermissionIds,
+            errors: errors,
+            message: `Successfully deleted ${deletedIds.length} of ${ids.length} sheets`
+        });
+    } catch (e) {
+        console.error('Batch delete failed:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // Download Sheet (redirect to storage URL or generate annotated PDF)
-app.get('/api/sheets/:id/download', async (req, res) => {
+app.get('/api/sheets/:id/download', authenticate, async (req, res) => {
     const { id } = req.params;
     const { annotated } = req.query;
 
     try {
-        const result = await db.query('SELECT * FROM sheets WHERE id = $1', [id]);
+        // Check ownership or shared access
+        const result = await db.query(`
+            SELECT s.* FROM sheets s
+            LEFT JOIN sheet_shares ss ON s.id = ss.sheet_id AND ss.shared_with_user_id = $2
+            WHERE s.id = $1 AND (s.user_id = $2 OR ss.shared_with_user_id = $2)
+        `, [id, req.user.id]);
         if (result.rows.length === 0 || !result.rows[0].file_url) {
             return res.status(404).send("File not found");
         }
@@ -873,11 +1265,16 @@ app.get('/api/sheets/:id/download', async (req, res) => {
 });
 
 // --- PROXY PDF (to avoid CORS issues) ---
-app.get('/api/sheets/:id/pdf', async (req, res) => {
+app.get('/api/sheets/:id/pdf', authenticate, async (req, res) => {
     const { id } = req.params;
 
     try {
-        const result = await db.query('SELECT file_url, file_name FROM sheets WHERE id = $1', [id]);
+        // Check ownership or shared access
+        const result = await db.query(`
+            SELECT s.file_url, s.file_name FROM sheets s
+            LEFT JOIN sheet_shares ss ON s.id = ss.sheet_id AND ss.shared_with_user_id = $2
+            WHERE s.id = $1 AND (s.user_id = $2 OR ss.shared_with_user_id = $2)
+        `, [id, req.user.id]);
         if (result.rows.length === 0 || !result.rows[0].file_url) {
             return res.status(404).send('File not found');
         }
@@ -891,6 +1288,177 @@ app.get('/api/sheets/:id/pdf', async (req, res) => {
         res.send(Buffer.from(buffer));
     } catch (e) {
         console.error('PDF proxy failed:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// --- SHEET SHARING ---
+
+// Permission levels:
+// 'view'          - View only, no modifications
+// 'annotate_self' - Can add personal annotations (only they can see)
+// 'annotate_all'  - Can add annotations visible to everyone
+// 'full'          - Full access including ability to delete
+const VALID_PERMISSIONS = ['view', 'annotate_self', 'annotate_all', 'full'];
+
+// Share a sheet with another user by email
+app.post('/api/sheets/:id/share', authenticate, async (req, res) => {
+    const { id } = req.params;
+    const { email, permission = 'view' } = req.body;
+
+    if (!email) {
+        return res.status(400).json({ error: 'Email is required' });
+    }
+
+    if (!VALID_PERMISSIONS.includes(permission)) {
+        return res.status(400).json({ error: 'Invalid permission level. Must be: view, annotate_self, annotate_all, or full' });
+    }
+
+    try {
+        // Verify the sheet exists and the user owns it
+        const sheetResult = await db.query(
+            'SELECT id, title FROM sheets WHERE id = $1 AND user_id = $2',
+            [id, req.user.id]
+        );
+        if (sheetResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Sheet not found or you do not own it' });
+        }
+
+        // Find the user by email
+        const userResult = await db.query(
+            'SELECT id, email, display_name FROM users WHERE LOWER(email) = LOWER($1)',
+            [email]
+        );
+        if (userResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Email not registered to a user' });
+        }
+
+        const targetUser = userResult.rows[0];
+
+        // Cannot share with yourself
+        if (targetUser.id === req.user.id) {
+            return res.status(400).json({ error: 'Cannot share a sheet with yourself' });
+        }
+
+        // Check if already shared
+        const existingShare = await db.query(
+            'SELECT id FROM sheet_shares WHERE sheet_id = $1 AND shared_with_user_id = $2',
+            [id, targetUser.id]
+        );
+        if (existingShare.rows.length > 0) {
+            return res.status(409).json({ error: 'Sheet is already shared with this user' });
+        }
+
+        // Create the share with permission
+        const shareResult = await db.query(`
+            INSERT INTO sheet_shares (sheet_id, shared_with_user_id, shared_by_user_id, permission)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, permission, created_at
+        `, [id, targetUser.id, req.user.id, permission]);
+
+        res.status(201).json({
+            message: 'Sheet shared successfully',
+            share: {
+                id: shareResult.rows[0].id,
+                sheet_id: id,
+                permission: shareResult.rows[0].permission,
+                shared_with: {
+                    id: targetUser.id,
+                    email: targetUser.email,
+                    display_name: targetUser.display_name
+                },
+                created_at: shareResult.rows[0].created_at
+            }
+        });
+    } catch (e) {
+        console.error('Share sheet failed:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Get list of users a sheet is shared with
+app.get('/api/sheets/:id/shares', authenticate, async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        // Verify the sheet exists and the user owns it
+        const sheetResult = await db.query(
+            'SELECT id FROM sheets WHERE id = $1 AND user_id = $2',
+            [id, req.user.id]
+        );
+        if (sheetResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Sheet not found or you do not own it' });
+        }
+
+        // Get all shares for this sheet with permission
+        const sharesResult = await db.query(`
+            SELECT ss.id, ss.permission, ss.created_at,
+                   u.id as user_id, u.email, u.display_name
+            FROM sheet_shares ss
+            JOIN users u ON ss.shared_with_user_id = u.id
+            WHERE ss.sheet_id = $1
+            ORDER BY ss.created_at DESC
+        `, [id]);
+
+        res.json(sharesResult.rows.map(row => ({
+            id: row.id,
+            permission: row.permission,
+            user: {
+                id: row.user_id,
+                email: row.email,
+                display_name: row.display_name
+            },
+            created_at: row.created_at
+        })));
+    } catch (e) {
+        console.error('Get shares failed:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Remove share access by email
+app.delete('/api/sheets/:id/share', authenticate, async (req, res) => {
+    const { id } = req.params;
+    const { email } = req.body;
+
+    if (!email) {
+        return res.status(400).json({ error: 'Email is required' });
+    }
+
+    try {
+        // Verify the sheet exists and the user owns it
+        const sheetResult = await db.query(
+            'SELECT id FROM sheets WHERE id = $1 AND user_id = $2',
+            [id, req.user.id]
+        );
+        if (sheetResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Sheet not found or you do not own it' });
+        }
+
+        // Find the user by email
+        const userResult = await db.query(
+            'SELECT id FROM users WHERE LOWER(email) = LOWER($1)',
+            [email]
+        );
+        if (userResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Email not registered to a user' });
+        }
+
+        const targetUserId = userResult.rows[0].id;
+
+        // Delete the share
+        const deleteResult = await db.query(
+            'DELETE FROM sheet_shares WHERE sheet_id = $1 AND shared_with_user_id = $2 RETURNING id',
+            [id, targetUserId]
+        );
+
+        if (deleteResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Share not found' });
+        }
+
+        res.status(200).json({ message: 'Share removed successfully' });
+    } catch (e) {
+        console.error('Remove share failed:', e);
         res.status(500).json({ error: e.message });
     }
 });
