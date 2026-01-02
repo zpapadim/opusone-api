@@ -25,24 +25,35 @@ const app = express();
 const port = process.env.PORT || 5000;
 
 // CORS configuration - allow frontend origins
-const allowedOrigins = [
-    'http://localhost:5173',      // Vite dev
-    'http://localhost:3000',      // React dev
-    process.env.FRONTEND_URL      // Production frontend URL
-].filter(Boolean);
-
 app.use(cors({
     origin: function(origin, callback) {
         // Allow requests with no origin (mobile apps, Postman, etc.)
         if (!origin) return callback(null, true);
-        if (allowedOrigins.includes(origin)) {
+
+        const allowedOrigins = [
+            'http://localhost:5173',      // Vite dev
+            'http://localhost:3000',      // React dev
+        ];
+
+        // Add production frontend URL if set
+        if (process.env.FRONTEND_URL) {
+            // Remove trailing slash if present for comparison
+            const productionUrl = process.env.FRONTEND_URL.replace(/\/$/, '');
+            allowedOrigins.push(productionUrl);
+        }
+
+        if (allowedOrigins.includes(origin) || allowedOrigins.includes(origin.replace(/\/$/, ''))) {
             callback(null, true);
         } else {
-            // In development, allow all origins; in production, block unauthorized origins
+            // Log the blocked origin for debugging
+            console.log('BLOCKED CORS ORIGIN:', origin);
+            console.log('ALLOWED ORIGINS:', allowedOrigins);
+            
             if (process.env.NODE_ENV === 'production') {
-                console.log('Blocked CORS request from:', origin);
                 callback(new Error('CORS not allowed'));
             } else {
+                // In dev, generally allow but warn
+                console.warn('Allowing blocked origin in dev mode despite mismatch');
                 callback(null, true);
             }
         }
