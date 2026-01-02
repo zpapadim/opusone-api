@@ -143,7 +143,7 @@ router.post('/forgot-password', async (req, res) => {
             { expiresIn: '1h' }
         );
 
-        const resetUrl = `${FRONTEND_URL.replace(/\/$/, '')}/reset-password?token=${resetToken}`;
+        const resetUrl = `${FRONTEND_URL.replace(/\/$/, '')}/?token=${resetToken}`;
 
         // Send email via Resend
         if (resend) {
