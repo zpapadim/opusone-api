@@ -934,8 +934,6 @@ app.get('/api/sheets', authenticate, async (req, res) => {
             folder_id
         } = req.query;
 
-        console.log('DEBUG - Incoming sort_by:', sort_by);
-
         let query = `
             SELECT s.*, g.name as genre_name,
                    COALESCE(
@@ -1044,9 +1042,6 @@ app.get('/api/sheets', authenticate, async (req, res) => {
         const sortOrder = order.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
         query += ` ORDER BY ${sortColumn} ${sortOrder}`;
-
-        console.log('DEBUG - sortColumn:', sortColumn);
-        console.log('DEBUG - query:', query);
 
         const result = await db.query(query, params);
         res.json(result.rows);
