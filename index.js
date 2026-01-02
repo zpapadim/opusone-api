@@ -375,7 +375,14 @@ app.get('/', async (req, res) => {
             <div class="bg-black/50 rounded-xl border border-gray-700 overflow-hidden flex flex-col h-[600px]">
                 <div class="p-4 border-b border-gray-700 flex justify-between items-center bg-gray-800/50">
                     <h2 class="font-bold flex items-center gap-2"><i data-lucide="terminal" size="18"></i> Live Logs</h2>
-                    <div class="flex gap-2">
+                    <div class="flex gap-2 items-center">
+                        <button onclick="copyLogs()" class="p-1.5 hover:bg-gray-700 rounded text-gray-400 hover:text-white transition-colors" title="Copy Logs">
+                            <i data-lucide="copy" size="14"></i>
+                        </button>
+                        <button onclick="downloadLogs()" class="p-1.5 hover:bg-gray-700 rounded text-gray-400 hover:text-white transition-colors" title="Download Logs">
+                            <i data-lucide="download" size="14"></i>
+                        </button>
+                        <span class="w-px h-4 bg-gray-700 mx-1"></span>
                         <span class="text-xs text-gray-500 flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span> Live</span>
                     </div>
                 </div>
@@ -478,12 +485,13 @@ app.get('/', async (req, res) => {
         }
 
         // Fetch Logs
+        let currentLogs = [];
         async function fetchLogs() {
             try {
                 const res = await fetch(\`\${API_BASE}/api/admin/logs?key=\${ADMIN_KEY}\`);
-                const logs = await res.json();
+                currentLogs = await res.json();
                 
-                const html = logs.map(l => \`
+                const html = currentLogs.map(l => \`
                     <div class="log-entry p-2 rounded hover:bg-white/5 \${l.type === 'ERROR' ? 'text-red-400 border-l-2 border-red-500 bg-red-900/10' : 'text-gray-300 border-l-2 border-gray-600'}">
                         <span class="opacity-50 mr-2">[\${new Date(l.timestamp).toLocaleTimeString()}]</span>
                         <span class="\${l.type === 'INFO' ? 'text-blue-400' : 'text-red-400'} font-bold mr-2">\${l.type}</span>
@@ -493,6 +501,28 @@ app.get('/', async (req, res) => {
                 
                 document.getElementById('logs-container').innerHTML = html;
             } catch (e) { console.error(e); }
+        }
+
+        function getLogText() {
+            return currentLogs.map(l => \`[\${l.timestamp}] [\${l.type}] \${l.message}\`).join('\\n');
+        }
+
+        function copyLogs() {
+            navigator.clipboard.writeText(getLogText()).then(() => {
+                alert('Logs copied to clipboard!');
+            });
+        }
+
+        function downloadLogs() {
+            const blob = new Blob([getLogText()], { type: 'text/plain' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = \`opusone-logs-\${new Date().toISOString()}.txt\`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
         }
 
         // Init
