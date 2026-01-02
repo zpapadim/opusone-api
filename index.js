@@ -644,6 +644,49 @@ app.post('/api/ocr', upload.single('file'), async (req, res) => {
 });
 
 
+// YouTube Search
+app.get('/api/youtube/search', authenticate, async (req, res) => {
+    const query = req.query.q;
+    const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY;
+
+    if (!YOUTUBE_API_KEY) {
+        return res.status(503).json({ 
+            error: 'YouTube Search is not configured', 
+            hint: 'Add YOUTUBE_API_KEY to your server .env file.' 
+        });
+    }
+
+    if (!query) return res.json({ results: [] });
+
+    try {
+        const response = await fetch(
+            `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=5&q=${encodeURIComponent(query)}&type=video&key=${YOUTUBE_API_KEY}`,
+            { headers: { 'Accept': 'application/json' } }
+        );
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error?.message || 'YouTube API error');
+        }
+
+        const data = await response.json();
+        const results = (data.items || []).map(item => ({
+            id: item.id.videoId,
+            title: item.snippet.title,
+            description: item.snippet.description,
+            thumbnail: item.snippet.thumbnails?.default?.url,
+            url: `https://www.youtube.com/watch?v=${item.id.videoId}`,
+            channelTitle: item.snippet.channelTitle,
+            source: 'youtube'
+        }));
+
+        res.json({ results });
+    } catch (e) {
+        console.error('YouTube Search Failed:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // MusicBrainz Search
 app.get('/api/search', async (req, res) => {
     const query = req.query.q;
