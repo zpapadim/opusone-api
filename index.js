@@ -246,15 +246,64 @@ const requireAdmin = (req, res, next) => {
 app.get('/', async (req, res) => {
     const key = req.query.key;
     
-    // If no key provided, show simple status (or unauthorized page)
+    // If no key provided, show login form
     if (!key || key !== ADMIN_KEY) {
         return res.send(`
-            <html>
-                <head><title>OpusOne Server</title></head>
-                <body style="font-family: system-ui; text-align: center; padding: 50px;">
-                    <h1>🎵 OpusOne API is Running</h1>
-                    <p>Access Admin Dashboard requires authentication.</p>
-                </body>
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>OpusOne Admin Login</title>
+                <script src="https://cdn.tailwindcss.com"></script>
+                <script src="https://unpkg.com/lucide@latest"></script>
+            </head>
+            <body class="bg-gray-900 text-gray-100 min-h-screen flex items-center justify-center p-4">
+                <div class="bg-gray-800 p-8 rounded-2xl shadow-2xl w-full max-w-md border border-gray-700">
+                    <div class="flex justify-center mb-6">
+                        <div class="bg-indigo-600 p-3 rounded-xl">
+                            <i data-lucide="music" class="w-8 h-8 text-white"></i>
+                        </div>
+                    </div>
+                    <h1 class="text-2xl font-bold text-center mb-2">OpusOne API</h1>
+                    <p class="text-gray-400 text-center text-sm mb-8">Enter Admin Key to access dashboard</p>
+                    
+                    <form onsubmit="handleLogin(event)" class="space-y-4">
+                        <div>
+                            <label class="block text-xs font-bold uppercase text-gray-500 mb-1">Admin Key</label>
+                            <div class="relative">
+                                <i data-lucide="lock" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500"></i>
+                                <input type="password" id="adminKey" required 
+                                    class="w-full bg-gray-900 border border-gray-600 rounded-lg py-2.5 pl-10 pr-4 text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all"
+                                    placeholder="••••••••••••"
+                                >
+                            </div>
+                        </div>
+                        <button type="submit" 
+                            class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2">
+                            <span>Access Dashboard</span>
+                            <i data-lucide="arrow-right" class="w-4 h-4"></i>
+                        </button>
+                    </form>
+                    
+                    <div class="mt-6 text-center">
+                        <span class="px-2 py-1 bg-green-900/30 text-green-400 text-xs rounded border border-green-800">
+                            System Operational
+                        </span>
+                    </div>
+                </div>
+
+                <script>
+                    lucide.createIcons();
+                    function handleLogin(e) {
+                        e.preventDefault();
+                        const key = document.getElementById('adminKey').value;
+                        if (key) {
+                            window.location.href = '/?key=' + encodeURIComponent(key);
+                        }
+                    }
+                </script>
+            </body>
             </html>
         `);
     }
