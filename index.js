@@ -119,7 +119,13 @@ async function extractMetadataFromImage(imagePath) {
 
 async function extractMetadataFromPdf(pdfPath) {
     const dataBuffer = fs.readFileSync(pdfPath);
-    const data = await pdfParse(dataBuffer);
+    // pdf-parse doesn't have a built-in "first page only" option for text extraction,
+    // but we can pass a pagerender callback to stop after page 1, or just 
+    // truncate the text if it contains page markers.
+    const options = {
+        max: 1 // Only process the first page
+    };
+    const data = await pdfParse(dataBuffer, options);
 
     const lines = data.text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     return {
