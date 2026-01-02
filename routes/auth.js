@@ -3,6 +3,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { Resend } = require('resend');
 const db = require('../lib/db');
+const { authenticate } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -263,6 +264,54 @@ router.get('/me', async (req, res) => {
         }
         console.error('Auth verify error:', err);
         res.status(500).json({ error: 'Authentication failed' });
+    }
+});
+
+// Change Password
+router.post('/change-password', authenticate, async (req, res) => {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+        return res.status(400).json({ error: 'Current and new password are required' });
+    }
+
+    if (newPassword.length < 6) {
+        return res.status(400).json({ error: 'New password must be at least 6 characters' });
+    }
+
+    try {
+        // Get current user password hash
+        const result = await db.query(
+            'SELECT password_hash FROM users WHERE id = $1',
+            [req.user.id]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+
+        const user = result.rows[0];
+
+        // Verify current password
+        const validPassword = await bcrypt.compare(currentPassword, user.password_hash);
+        if (!validPassword) {
+            return res.status(401).json({ error: 'Incorrect current password' });
+        }
+
+        // Hash new password
+        const saltRounds = 10;
+        const passwordHash = await bcrypt.hash(newPassword, saltRounds);
+
+        // Update password
+        await db.query(
+            'UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2',
+            [passwordHash, req.user.id]
+        );
+
+        res.json({ message: 'Password updated successfully' });
+    } catch (err) {
+        console.error('Change password error:', err);
+        res.status(500).json({ error: 'Failed to update password' });
     }
 });
 
